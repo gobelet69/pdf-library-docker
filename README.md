@@ -6,7 +6,7 @@ Minimal Docker package for the PDF Library web app.
 
 ```bash
 mkdir -p library/sorted_pdfs/_Unsorted
-docker run --rm -p 8765:8765 -v "$PWD/library:/app/library" gobelet69/pdf-library:latest
+docker run --rm -p 8765:8765 -v "$PWD/library:/app/library" gobelet/pdf-library:latest
 ```
 
 Then open:

@@ -1,6 +1,6 @@
 services:
   pdf-library:
-    image: gobelet69/pdf-library:latest
+    image: gobelet/pdf-library:latest
     build:
       context: .
     ports:
