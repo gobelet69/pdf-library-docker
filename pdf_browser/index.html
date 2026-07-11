@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PDF Library</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="mark">PDF</span>
+        <div>
+          <h1>Library</h1>
+          <p id="rootLabel"></p>
+        </div>
+      </div>
+      <button class="folder active" data-folder="">Bibliothèque <span id="allCount">0</span></button>
+      <button class="folder urgent" data-folder="_Unsorted">À trier <span id="unsortedCount">0</span></button>
+      <button class="folder" id="graphBtn" type="button">Graph <span id="graphCount">0</span></button>
+      <button class="folder urgent" id="quickTriageBtn" type="button">Classer <span id="quickTriageCount">0</span></button>
+      <button class="folder urgent" id="quickRenameBtn" type="button">Renommer <span id="quickRenameCount">0</span></button>
+      <button class="folder urgent" id="cleanupBtn" type="button">À nettoyer <span id="cleanupCount">0</span></button>
+      <div class="tree" id="folderTree"></div>
+    </aside>
+
+    <main class="app">
+      <div class="drop-overlay" id="dropOverlay" hidden>
+        <div>
+          <strong>Importer dans _Unsorted</strong>
+          <span>Dépose tes PDFs ici</span>
+        </div>
+      </div>
+
+      <header class="toolbar">
+        <div>
+          <h2 id="viewTitle">Bibliothèque</h2>
+          <p id="viewMeta">Chargement...</p>
+        </div>
+        <div class="tools">
+          <input id="search" type="search" placeholder="Rechercher un PDF">
+          <select id="sortSelect" title="Trier les PDFs">
+            <option value="name_asc">Nom A-Z</option>
+            <option value="name_desc">Nom Z-A</option>
+            <option value="date_desc" selected>Plus récent</option>
+            <option value="date_asc">Plus ancien</option>
+            <option value="folder_asc">Dossier A-Z</option>
+          </select>
+          <select id="readFilter" title="Filtrer par lecture">
+            <option value="">Tous</option>
+            <option value="read">Lus</option>
+            <option value="unread">Non lus</option>
+          </select>
+          <select id="attributeFilter" title="Filtrer par attribut">
+            <option value="">Tous les attributs</option>
+            <option value="favorite">Favoris</option>
+            <option value="to_read">À lire</option>
+            <option value="important">Important</option>
+          </select>
+          <button id="urlImportBtn" title="Importer un PDF depuis une URL">URL PDF</button>
+          <button id="rebuildSearchBtn" title="Indexer le contenu des PDFs">Indexer</button>
+        </div>
+      </header>
+
+      <section class="triage" id="triagePanel" hidden>
+        <div>
+          <h3>Trier depuis _Unsorted</h3>
+          <p>Sélectionne une destination existante ou crée un dossier, puis déplace le PDF choisi.</p>
+        </div>
+        <div class="triage-controls">
+          <select id="destinationSelect"></select>
+          <input id="newFolderInput" type="text" placeholder="Nouveau dossier ou sous/dossier">
+          <button id="createFolderBtn">Créer</button>
+          <button id="moveBtn" disabled>Déplacer</button>
+        </div>
+      </section>
+
+      <section class="quick-triage" id="quickTriage" hidden>
+        <div class="triage-preview" id="triagePreview"></div>
+        <aside class="quick-triage-controls">
+          <div class="triage-progress" id="triageProgress"></div>
+          <h2 id="triageTitle"></h2>
+          <label class="field">
+            <span>Nouveau nom</span>
+            <input id="triageFilename" type="text" autocomplete="off">
+          </label>
+          <div class="inline-field">
+            <input id="triageNewFolder" type="text" placeholder="Nouveau dossier">
+            <button id="triageCreateFolder" type="button">Créer</button>
+          </div>
+          <div class="triage-actions">
+            <button id="triageMove" type="button" class="primary">Déplacer</button>
+            <button id="triageSkip" type="button">Passer</button>
+            <button id="triageOpen" type="button">Ouvrir</button>
+          </div>
+          <div class="triage-step-actions">
+            <button id="triagePrevious" type="button">Précédent</button>
+            <button id="triageNext" type="button">Suivant</button>
+          </div>
+        </aside>
+        <section class="destination-picker">
+          <h3>Dossier destination</h3>
+          <div class="destination-buttons" id="triageDestinationButtons"></div>
+        </section>
+      </section>
+
+      <section class="quick-rename" id="quickRename" hidden>
+        <div class="triage-preview" id="renamePreview"></div>
+        <aside class="quick-triage-controls">
+          <div class="triage-progress" id="renameProgress"></div>
+          <h2 id="renameTitle"></h2>
+          <label class="field">
+            <span>Nouveau nom</span>
+            <input id="renameFilename" type="text" autocomplete="off">
+          </label>
+          <div class="rename-suggestions" id="renameSuggestions"></div>
+          <div class="triage-actions">
+            <button id="renameApply" type="button" class="primary">Renommer</button>
+            <button id="renameSkip" type="button">Passer</button>
+            <button id="renameOpen" type="button">Ouvrir</button>
+          </div>
+          <div class="triage-step-actions">
+            <button id="renamePrevious" type="button">Précédent</button>
+            <button id="renameNext" type="button">Suivant</button>
+          </div>
+        </aside>
+      </section>
+
+      <section class="cleanup-view" id="cleanupView" hidden>
+        <div class="cleanup-summary" id="cleanupSummary"></div>
+        <div class="cleanup-sections" id="cleanupSections"></div>
+      </section>
+
+      <section class="search-view" id="searchView" hidden>
+        <div class="search-results" id="searchResults"></div>
+      </section>
+
+      <section class="graph-view" id="graphView" hidden>
+        <div class="graph-stage" id="graphStage"></div>
+        <aside class="graph-controls" id="graphControls" aria-label="Options du graph">
+          <details class="graph-section">
+            <summary>
+              <span>Filters</span>
+              <span class="graph-panel-actions">
+                <button id="graphReset" type="button" title="Reset graph">↺</button>
+                <button id="graphPanelClose" type="button" title="Hide options">×</button>
+              </span>
+            </summary>
+            <div class="graph-section-body">
+              <label class="graph-field">
+                <span>Search</span>
+                <input id="graphSearch" type="search" placeholder="Search files">
+              </label>
+              <label class="graph-toggle"><span>Folders</span><input id="graphShowFolders" type="checkbox" checked></label>
+              <label class="graph-toggle"><span>PDFs</span><input id="graphShowPdfs" type="checkbox" checked></label>
+              <label class="graph-toggle"><span>_Unsorted</span><input id="graphShowUnsorted" type="checkbox" checked></label>
+              <label class="graph-toggle"><span>Warnings only</span><input id="graphWarningsOnly" type="checkbox"></label>
+            </div>
+          </details>
+          <details class="graph-section">
+            <summary><span>Groups</span></summary>
+            <div class="graph-section-body">
+              <label class="graph-toggle"><span>Labels</span><input id="graphShowLabels" type="checkbox" checked></label>
+              <label class="graph-toggle"><span>Folder colors</span><input id="graphFolderColors" type="checkbox" checked></label>
+            </div>
+          </details>
+          <details class="graph-section">
+            <summary><span>Display</span></summary>
+            <div class="graph-section-body">
+              <label class="graph-range"><span>Node size</span><input id="graphNodeSize" type="range" min="0.6" max="2" step="0.1" value="1"></label>
+              <label class="graph-range"><span>Link thickness</span><input id="graphLinkThickness" type="range" min="0.3" max="2.5" step="0.1" value="0.8"></label>
+              <label class="graph-range"><span>Text threshold</span><input id="graphTextThreshold" type="range" min="0" max="2" step="0.1" value="0.7"></label>
+            </div>
+          </details>
+          <details class="graph-section">
+            <summary><span>Forces</span></summary>
+            <div class="graph-section-body">
+              <button id="graphAnimate" type="button" class="primary">Animate</button>
+              <label class="graph-range"><span>Center force</span><input id="graphCenterForce" type="range" min="0" max="1.5" step="0.05" value="0.55"></label>
+              <label class="graph-range"><span>Repel force</span><input id="graphRepelForce" type="range" min="10" max="280" step="5" value="90"></label>
+              <label class="graph-range"><span>Link force</span><input id="graphLinkForce" type="range" min="0.05" max="1.5" step="0.05" value="0.7"></label>
+              <label class="graph-range"><span>Link distance</span><input id="graphLinkDistance" type="range" min="20" max="180" step="5" value="58"></label>
+            </div>
+          </details>
+          <span id="graphSummary"></span>
+        </aside>
+        <button class="graph-panel-show" id="graphPanelShow" type="button" hidden>Options</button>
+      </section>
+
+      <section class="details-panel" id="detailsPanel" hidden>
+        <div class="details-card">
+          <header>
+            <div>
+              <p>Details document</p>
+              <h3 id="detailsTitle"></h3>
+            </div>
+            <button id="detailsClose" type="button">Fermer</button>
+          </header>
+          <label class="field">
+            <span>Nom du fichier</span>
+            <input id="detailsFilename" type="text" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Statut</span>
+            <select id="detailsStatus">
+              <option value="">Aucun</option>
+              <option value="important">Important</option>
+              <option value="archive">Archive</option>
+            </select>
+          </label>
+          <label class="read-attribute">
+            <span>Lecture</span>
+            <button id="detailsReadToggle" type="button" aria-pressed="false">Non lu</button>
+          </label>
+          <label class="field">
+            <span>Tags</span>
+            <input id="detailsTags" type="text" placeholder="cours, exam, important" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>URL</span>
+            <input id="detailsSourceUrl" type="url" placeholder="https://source..." autocomplete="off">
+          </label>
+          <section class="archive-passport" id="detailsPassport"></section>
+          <label class="field">
+            <span>Note</span>
+            <textarea id="detailsNote" placeholder="Note locale"></textarea>
+          </label>
+          <div class="details-actions">
+            <button id="detailsTrash" type="button" class="danger">Corbeille</button>
+            <span></span>
+            <button id="detailsSave" type="button" class="primary">Enregistrer</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="pdf-reader-modal" id="pdfReaderModal" hidden>
+        <div class="pdf-reader-backdrop" id="pdfReaderBackdrop"></div>
+        <div class="pdf-reader-shell" id="pdfReaderShell">
+          <header class="pdf-reader-header">
+            <div>
+              <p>Lecteur PDF</p>
+              <h3 id="pdfReaderTitle"></h3>
+            </div>
+            <div class="pdf-reader-actions">
+              <button id="pdfReaderOpenTab" type="button">Onglet</button>
+              <button id="pdfReaderToggleSidebar" class="reader-icon-button reader-details-toggle" type="button" title="Afficher les attributs à côté" aria-label="Afficher les attributs à côté">
+                <span aria-hidden="true">›</span>
+              </button>
+              <button id="pdfReaderClose" class="reader-icon-button reader-close-button" type="button" title="Quitter" aria-label="Quitter">
+                <span aria-hidden="true">×</span>
+              </button>
+            </div>
+          </header>
+          <div class="pdf-reader-body">
+            <object id="pdfReaderFrame" type="application/pdf" title="Lecteur PDF">
+              <p>Impossible d'afficher le PDF ici. Utilise le bouton Onglet.</p>
+            </object>
+            <aside class="pdf-reader-sidebar" id="pdfReaderSidebar">
+              <header>
+                <div>
+                  <p>Attributs</p>
+                  <h4 id="pdfReaderSidebarTitle"></h4>
+                </div>
+              </header>
+              <p class="reader-message" id="pdfReaderMessage"></p>
+              <label class="field">
+                <span>Nom du fichier</span>
+                <input id="pdfReaderFilename" type="text" autocomplete="off">
+              </label>
+              <label class="field">
+                <span>Statut</span>
+                <select id="pdfReaderStatus">
+                  <option value="">Aucun</option>
+                  <option value="important">Important</option>
+                  <option value="archive">Archive</option>
+                </select>
+              </label>
+              <label class="read-attribute">
+                <span>Lecture</span>
+                <button id="pdfReaderReadToggle" type="button" aria-pressed="false">Non lu</button>
+              </label>
+              <label class="field">
+                <span>Tags</span>
+                <input id="pdfReaderTags" type="text" placeholder="cours, exam, important" autocomplete="off">
+              </label>
+              <label class="field">
+                <span>URL</span>
+                <input id="pdfReaderSourceUrl" type="url" placeholder="https://source..." autocomplete="off">
+              </label>
+              <label class="field">
+                <span>Note</span>
+                <textarea id="pdfReaderNote" placeholder="Note locale"></textarea>
+              </label>
+              <div class="pdf-reader-sidebar-actions">
+                <button id="pdfReaderClear" type="button">Vider</button>
+                <button id="pdfReaderSave" type="button" class="primary">Enregistrer</button>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <section class="url-import-panel" id="urlImportPanel" hidden>
+        <div class="url-import-card">
+          <header>
+            <div>
+              <p id="urlImportEyebrow">Importer un PDF</p>
+              <h3 id="urlImportTitle">PDF depuis une URL</h3>
+            </div>
+            <button id="urlImportClose" type="button">Fermer</button>
+          </header>
+          <label class="field">
+            <span>URL</span>
+            <input id="urlImportInput" type="url" placeholder="https://..." autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Nom optionnel</span>
+            <input id="urlImportFilename" type="text" placeholder="Nom optionnel" autocomplete="off">
+          </label>
+          <div class="details-actions">
+            <button id="urlImportSubmit" type="button" class="primary">Enregistrer</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="capture-inbox" id="captureInbox" hidden>
+        <div class="capture-card">
+          <header>
+            <div>
+              <p id="captureProgress">Capture inbox</p>
+              <h3 id="captureTitle">Préparer l'archive</h3>
+            </div>
+            <button id="captureCancel" type="button">Annuler</button>
+          </header>
+          <div class="capture-source" id="captureSource"></div>
+          <label class="field">
+            <span>Nom d'archive</span>
+            <input id="captureFilename" type="text" autocomplete="off">
+          </label>
+          <div class="rename-suggestions" id="captureSuggestions"></div>
+          <label class="field">
+            <span>Dossier</span>
+            <select id="captureDestination"></select>
+          </label>
+          <div class="inline-field">
+            <input id="captureNewFolder" type="text" placeholder="Nouveau dossier">
+            <button id="captureCreateFolder" type="button">Créer</button>
+          </div>
+          <label class="field">
+            <span>Tags</span>
+            <input id="captureTags" type="text" placeholder="archive, source, thème" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Note</span>
+            <textarea id="captureNote" placeholder="Contexte de capture"></textarea>
+          </label>
+          <div class="capture-duplicates" id="captureDuplicates"></div>
+          <div class="details-actions">
+            <button id="captureSkip" type="button">Passer</button>
+            <button id="captureImport" type="button" class="primary">Importer</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="daily-five" id="dailyFive" hidden>
+        <div class="daily-five-main">
+          <header class="daily-five-header">
+            <div>
+              <p>Daily Five</p>
+              <h3 id="dailyFiveTitle">5 PDFs du jour</h3>
+            </div>
+            <div class="daily-five-rotate">
+              <button id="dailyFivePrev" class="icon" type="button" title="PDF précédent" aria-label="PDF précédent">‹</button>
+              <button id="dailyFiveNext" class="icon" type="button" title="PDF suivant" aria-label="PDF suivant">›</button>
+            </div>
+          </header>
+          <div class="daily-five-stage">
+            <div class="daily-five-preview" id="dailyFivePreview"></div>
+            <div class="daily-five-info">
+              <span id="dailyFivePosition"></span>
+              <h4 id="dailyFiveName"></h4>
+              <p id="dailyFivePath"></p>
+              <div class="daily-five-actions">
+                <button id="dailyFiveRead" type="button" class="primary">Marquer lu</button>
+                <button id="dailyFiveOpen" type="button">Ouvrir</button>
+                <button id="dailyFiveDetails" type="button">Details</button>
+              </div>
+            </div>
+          </div>
+          <div class="daily-five-track" id="dailyFiveTrack"></div>
+        </div>
+        <aside class="daily-five-heatmap">
+          <header>
+            <strong id="dailyFiveProgress">0/5 lus aujourd'hui</strong>
+            <span id="dailyFiveStreak"></span>
+          </header>
+          <div class="heatmap-legend">
+            <span>Less</span>
+            <i data-level="0"></i>
+            <i data-level="1"></i>
+            <i data-level="2"></i>
+            <i data-level="3"></i>
+            <i data-level="4"></i>
+            <i data-level="5"></i>
+            <span>More</span>
+          </div>
+          <div class="reading-heatmap" id="dailyFiveHeatmap" aria-label="Historique de lecture"></div>
+        </aside>
+      </section>
+
+      <section class="grid" id="pdfGrid"></section>
+      <section class="empty" id="emptyState" hidden>
+        <h3>Aucun PDF ici</h3>
+        <p>Change de dossier, retire le filtre, ou ajoute des fichiers dans _Unsorted.</p>
+      </section>
+    </main>
+
+    <script src="/vendor/d3.v7.min.js"></script>
+    <script src="/graph_model.js"></script>
+    <script src="/graph_force.js"></script>
+    <script src="/daily_five.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

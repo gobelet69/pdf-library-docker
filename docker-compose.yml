@@ -1,0 +1,15 @@
+services:
+  pdf-library:
+    image: gobelet69/pdf-library:latest
+    build:
+      context: .
+    ports:
+      - "8765:8765"
+    environment:
+      PDF_LIBRARY_BOOTSTRAP: "${PDF_LIBRARY_BOOTSTRAP:-1}"
+      PDF_LIBRARY_REBUILD_INDEX: "${PDF_LIBRARY_REBUILD_INDEX:-1}"
+      PDF_LIBRARY_HOST: "0.0.0.0"
+      PDF_LIBRARY_PORT: "8765"
+    volumes:
+      - ./library:/app/library
+    restart: unless-stopped
