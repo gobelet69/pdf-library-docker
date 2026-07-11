@@ -30,6 +30,4 @@ The mounted `library` directory stores PDFs and app state outside the image:
 
 On startup, the container scans the mounted library and rebuilds the search index. Set `PDF_LIBRARY_REBUILD_INDEX=0` to skip startup indexing, or `PDF_LIBRARY_BOOTSTRAP=0` to skip both scan and indexing.
 
-This repository intentionally excludes the local PDF collection, Web Archive, macOS menu bar app, tests, and development notes.
-
 Direct PDF URL imports are supported. Browser-based website-to-PDF capture is intentionally excluded from this minimal Docker image.
