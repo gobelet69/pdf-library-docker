@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import secrets
 import sys
 from pathlib import Path
 
@@ -15,6 +16,22 @@ def truthy_env(name, default=True):
     if raw is None:
         return default
     return raw.strip().casefold() not in {"0", "false", "no", "off"}
+
+
+def ensure_auth_password(root):
+    path = Path(os.environ.get("PDF_LIBRARY_AUTH_PASSWORD_FILE") or root / "library" / "app_state" / "pdf_browser" / "admin_password")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(secrets.token_urlsafe(32) + "\n")
+    if not path.is_file() or not path.read_text(encoding="utf-8").strip():
+        raise RuntimeError(f"PDF Library password file is missing or empty: {path}")
+    return path
 
 
 def bootstrap_library(root, rebuild_index=True):
@@ -35,7 +52,7 @@ def bootstrap_library(root, rebuild_index=True):
                     flush=True,
                 )
 
-        result = library.rebuild_search_index(progress_callback=log_progress)
+        result = library.rebuild_search_index(progress_callback=log_progress, retry_failed=True)
         print(
             "PDF Library bootstrap: indexed "
             f"{result.get('indexed', 0)} PDF(s), "
@@ -46,6 +63,9 @@ def bootstrap_library(root, rebuild_index=True):
 
 
 def main():
+    password_file = ensure_auth_password(ROOT)
+    os.environ["PDF_LIBRARY_AUTH_PASSWORD_FILE"] = str(password_file)
+    print(f"PDF Library authentication password file: {password_file}", flush=True)
     if truthy_env("PDF_LIBRARY_BOOTSTRAP", True):
         bootstrap_library(ROOT, rebuild_index=truthy_env("PDF_LIBRARY_REBUILD_INDEX", True))
 

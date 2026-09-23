@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import argparse
+import base64
+import binascii
 from email.parser import BytesParser
 from email.policy import default
+import hmac
 import json
 import mimetypes
 import os
@@ -18,6 +21,17 @@ APP_DIR = Path(__file__).resolve().parent
 ROOT = APP_DIR.parent
 LIBRARY = PdfLibrary(ROOT)
 DEFAULT_INCLUDE_THUMBNAILS = True
+AUTH_CREDENTIALS = None
+
+
+def load_auth_credentials():
+    password_file = os.environ.get("PDF_LIBRARY_AUTH_PASSWORD_FILE")
+    if not password_file:
+        return None
+    password = Path(password_file).read_text(encoding="utf-8").strip()
+    if not password:
+        raise RuntimeError("PDF Library password file is empty")
+    return os.environ.get("PDF_LIBRARY_AUTH_USER", "admin"), password
 
 
 def parse_range_header(header, file_size):
@@ -61,10 +75,45 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "PdfBrowser/1.0"
 
     def do_GET(self):
+        if self._require_auth():
+            return
         self._handle_get(send_body=True)
 
     def do_HEAD(self):
+        if self._require_auth():
+            return
         self._handle_get(send_body=False)
+
+    def _require_auth(self):
+        if AUTH_CREDENTIALS is None:
+            return False
+        scheme, _, encoded = self.headers.get("Authorization", "").partition(" ")
+        if scheme.casefold() == "basic":
+            try:
+                decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
+                user, separator, password = decoded.partition(":")
+                if separator and hmac.compare_digest(user, AUTH_CREDENTIALS[0]) and hmac.compare_digest(password, AUTH_CREDENTIALS[1]):
+                    return False
+            except (ValueError, UnicodeError, binascii.Error):
+                pass
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="PDF Library", charset="UTF-8"')
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return True
+
+    def _reject_cross_origin(self):
+        origin = self.headers.get("Origin")
+        if not origin:
+            return False
+        parsed = urlparse(origin)
+        if parsed.scheme in {"http", "https"} and parsed.netloc.casefold() == self.headers.get("Host", "").casefold():
+            return False
+        self.send_response(403)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return True
 
     def _handle_get(self, send_body=True):
         parsed = urlparse(self.path)
@@ -75,9 +124,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(LIBRARY.cleanup_report(), send_body=send_body)
             elif parsed.path == "/api/search":
                 params = parse_qs(parsed.query)
-                self._json(LIBRARY.search_content(params.get("q", [""])[0]), send_body=send_body)
+                with LIBRARY._search_index_lock:
+                    self._json(LIBRARY.search_content(params.get("q", [""])[0]), send_body=send_body)
             elif parsed.path == "/api/search/status":
-                self._json(LIBRARY.search_index_status(), send_body=send_body)
+                with LIBRARY._search_index_lock:
+                    self._json(LIBRARY.search_index_status(), send_body=send_body)
             elif parsed.path == "/api/open":
                 self._open_file(parsed.query)
             elif parsed.path.startswith("/pdf/"):
@@ -89,7 +140,8 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path.startswith("/generated-thumb/"):
                 self._serve_library_file(parsed.path, "/generated-thumb/", LIBRARY.absolute_generated_thumbnail, send_body=send_body, cache_immutable=True)
             elif parsed.path == "/search_index.json":
-                self._serve_file(LIBRARY.search_index_path, inline=True, send_body=send_body)
+                with LIBRARY._search_index_lock:
+                    self._serve_file(LIBRARY.search_index_path, inline=True, send_body=send_body)
             else:
                 self._serve_static(parsed.path, send_body=send_body)
         except LibraryError as exc:
@@ -100,6 +152,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(self._unexpected_error_payload(exc), status=500, send_body=send_body)
 
     def do_POST(self):
+        if self._require_auth() or self._reject_cross_origin():
+            return
         parsed = urlparse(self.path)
         try:
             if parsed.path == "/api/import":
@@ -161,7 +215,7 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/delete-folder":
                 self._json(LIBRARY.delete_empty_folder(payload.get("path")))
             elif parsed.path == "/api/search/rebuild":
-                self._json(LIBRARY.rebuild_search_index(payload.get("limit")))
+                self._json(LIBRARY.rebuild_search_index(payload.get("limit"), retry_failed=payload.get("retryFailed") is True))
             else:
                 self._json({"error": "Unknown endpoint"}, status=404)
         except LibraryError as exc:
@@ -236,7 +290,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(content_length))
         if cache_immutable:
-            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            self.send_header("Cache-Control", "private, max-age=31536000, immutable")
         if path.suffix.lower() == ".pdf":
             disposition = "inline" if inline else "attachment"
             self.send_header("Content-Disposition", content_disposition_header(disposition, path.name))
@@ -267,9 +321,10 @@ class Handler(BaseHTTPRequestHandler):
     def _import_payload(self):
         imported = []
         for filename, content in self._multipart_files():
-            imported.append(LIBRARY.import_pdf(content, filename))
+            imported.append(LIBRARY.import_pdf(content, filename, index=False))
         if not imported:
             raise LibraryError("No PDFs uploaded", code="empty_upload")
+        LIBRARY.index_imported_pdfs([item["path"] for item in imported])
         return imported
 
     def _prepare_upload_payload(self):
@@ -320,13 +375,14 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main(argv=None):
-    global DEFAULT_INCLUDE_THUMBNAILS
+    global AUTH_CREDENTIALS, DEFAULT_INCLUDE_THUMBNAILS
     parser = argparse.ArgumentParser(description="Local PDF browser")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8765, type=int)
     parser.add_argument("--no-preload", action="store_true", help="Start serving before scanning the library.")
     parser.add_argument("--fast-library", action="store_true", help="Skip thumbnail lookup on /api/library by default.")
     args = parser.parse_args(argv)
+    AUTH_CREDENTIALS = load_auth_credentials()
     DEFAULT_INCLUDE_THUMBNAILS = not args.fast_library
     if not args.no_preload:
         try:

@@ -4,6 +4,7 @@ import hashlib
 import re
 import shutil
 import subprocess
+import threading
 import unicodedata
 import urllib.parse
 import urllib.request
@@ -38,6 +39,8 @@ class PdfLibrary:
         self.thumbnail_manifest_path = self.state_dir / "thumbnail_manifest.json"
         self.generated_thumbnail_dir = self.state_dir / "generated_thumbnails"
         self.generate_thumbnails = generate_thumbnails
+        self._thumbnail_lock = threading.RLock()
+        self._search_index_lock = threading.RLock()
 
     @staticmethod
     def _default_data_root(root):
@@ -187,7 +190,7 @@ class PdfLibrary:
         target.mkdir(parents=True, exist_ok=True)
         return {"path": self._rel(target), "name": target.name}
 
-    def import_pdf(self, content, filename):
+    def import_pdf(self, content, filename, index=True):
         self._ensure_roots()
         if not content:
             raise LibraryError("PDF is empty", code="empty_pdf")
@@ -212,6 +215,8 @@ class PdfLibrary:
             history_type="imported",
             history_details={"originalFilename": original_filename, "path": rel},
         )
+        if index:
+            self.index_imported_pdfs([rel])
         return {
             "path": rel,
             "name": destination.name,
@@ -261,6 +266,7 @@ class PdfLibrary:
             history_type="imported",
             history_details={"originalFilename": suggested_name, "path": rel, "sourceUrl": normalized_url},
         )
+        self.index_imported_pdfs([rel])
         return {
             "path": rel,
             "name": destination.name,
@@ -364,6 +370,7 @@ class PdfLibrary:
                 source.unlink()
                 if self._remove_state_path(state, source_rel):
                     self._save_state(state)
+                self._relocate_search_document(source_rel)
                 return {
                     "action": "deleted_source_duplicate",
                     "path": self._rel(destination),
@@ -378,6 +385,7 @@ class PdfLibrary:
         if self._move_state_path(state, source_rel, destination_rel):
             self._save_state(state)
         self._append_history(destination_rel, "moved", {"from": source_rel, "to": destination_rel})
+        self._relocate_search_document(source_rel, destination)
 
         return self._pdf_location_response(destination, destination_dir)
 
@@ -410,6 +418,7 @@ class PdfLibrary:
         if self._move_state_path(state, source_rel, destination_rel):
             self._save_state(state)
         self._append_history(destination_rel, "renamed", {"from": source_rel, "to": destination_rel})
+        self._relocate_search_document(source_rel, destination)
 
         return self._pdf_location_response(destination, destination.parent)
 
@@ -429,28 +438,94 @@ class PdfLibrary:
         return {"archived": source_rel, "archivePath": str(destination)}
 
     def generate_preview(self, pdf_path):
-        source = self._safe_file(pdf_path)
-        thumbnail = self._thumbnail_for(source, force_generate=True)
-        if not thumbnail:
-            raise LibraryError("Could not generate preview", code="preview_generation_failed")
-        self._remember_thumbnail(source, thumbnail)
-        return {
-            "path": self._rel(source),
-            "thumbnail": thumbnail["name"],
-            "thumbnailUrl": thumbnail["url"],
-        }
+        with self._thumbnail_lock:
+            source = self._safe_file(pdf_path)
+            thumbnail = self._thumbnail_for(source, force_generate=True)
+            if not thumbnail:
+                raise LibraryError("Could not generate preview", code="preview_generation_failed")
+            self._remember_thumbnail(source, thumbnail)
+            return {
+                "path": self._rel(source),
+                "thumbnail": thumbnail["name"],
+                "thumbnailUrl": thumbnail["url"],
+            }
 
     def thumbnail_file(self, pdf_path):
-        source = self._safe_file(pdf_path)
-        thumbnail = self._thumbnail_for(source, force_generate=True)
-        if not thumbnail:
-            raise LibraryError("Could not generate thumbnail", code="preview_generation_failed")
-        self._remember_thumbnail(source, thumbnail)
-        if thumbnail["url"].startswith("/thumb/"):
-            return self.absolute_thumbnail(thumbnail["name"])
-        return self.absolute_generated_thumbnail(thumbnail["name"])
+        with self._thumbnail_lock:
+            source = self._safe_file(pdf_path)
+            thumbnail = self._thumbnail_for(source, force_generate=True)
+            if not thumbnail:
+                raise LibraryError("Could not generate thumbnail", code="preview_generation_failed")
+            self._remember_thumbnail(source, thumbnail)
+            if thumbnail["url"].startswith("/thumb/"):
+                return self.absolute_thumbnail(thumbnail["name"])
+            return self.absolute_generated_thumbnail(thumbnail["name"])
 
-    def rebuild_search_index(self, limit=None, progress_callback=None):
+    def index_imported_pdfs(self, pdf_paths):
+        if not pdf_paths:
+            return
+        with self._search_index_lock:
+            try:
+                index = json.loads(self.search_index_path.read_text(encoding="utf-8"))
+                documents = index["documents"]
+                if not isinstance(documents, list) or not all(isinstance(item, dict) and isinstance(item.get("path"), str) for item in documents):
+                    raise ValueError("Invalid search index")
+            except (FileNotFoundError, OSError, ValueError, KeyError, TypeError):
+                self._rebuild_search_index(None, None, False)
+                return
+
+            by_path = {item["path"]: item for item in documents}
+            indexed_at = self._now_iso()
+            for rel in pdf_paths:
+                path = self._safe_file(rel)
+                stat = path.stat()
+                try:
+                    text = self._clean_extracted_text(self._extract_pdf_text(path))
+                    status = "indexed" if text else "empty_text"
+                    error = ""
+                except Exception as exc:
+                    text = ""
+                    status = "failed"
+                    error = f"{type(exc).__name__}: {exc}"
+                by_path[rel] = self._search_index_document(
+                    path, stat, text, status, error, indexed_at, self.SEARCH_EXTRACTOR_VERSION,
+                )
+
+            self._write_text_replacing_file(
+                self.search_index_path,
+                json.dumps({"version": 2, "documents": sorted(by_path.values(), key=lambda item: item["path"].casefold())}, ensure_ascii=False, indent=2) + "\n",
+            )
+
+    def _relocate_search_document(self, source_rel, destination=None):
+        with self._search_index_lock:
+            if not self.search_index_path.exists():
+                return
+            documents = self._load_search_index_documents()
+            document = documents.pop(source_rel, None)
+            if document is None:
+                return
+            if destination is not None:
+                destination_rel = self._rel(destination)
+                stat = destination.stat()
+                document.update({
+                    "path": destination_rel,
+                    "name": destination.name,
+                    "title": self._display_title(destination.name),
+                    "folder": self._folder_for_rel(destination_rel),
+                    "size": stat.st_size,
+                    "modified": stat.st_mtime,
+                })
+                documents[destination_rel] = document
+            self._write_text_replacing_file(
+                self.search_index_path,
+                json.dumps({"version": 2, "documents": sorted(documents.values(), key=lambda item: item["path"].casefold())}, ensure_ascii=False, indent=2) + "\n",
+            )
+
+    def rebuild_search_index(self, limit=None, progress_callback=None, retry_failed=False):
+        with self._search_index_lock:
+            return self._rebuild_search_index(limit, progress_callback, retry_failed)
+
+    def _rebuild_search_index(self, limit, progress_callback, retry_failed):
         self._ensure_roots()
         existing = self._load_search_index_documents()
         batch_limit = int(limit) if limit else None
@@ -458,7 +533,10 @@ class PdfLibrary:
         remaining = 0
         documents = []
         indexed_at = self._now_iso()
-        paths = sorted(self.sorted_root.rglob("*.pdf"), key=lambda p: self._rel(p).casefold())
+        paths = sorted(
+            (path for path in self.sorted_root.rglob("*") if path.is_file() and path.suffix.lower() == ".pdf"),
+            key=lambda p: self._rel(p).casefold(),
+        )
         total = len(paths)
         for index, path in enumerate(paths, start=1):
             rel = self._rel(path)
@@ -469,7 +547,8 @@ class PdfLibrary:
                 and previous.get("size") == stat.st_size
                 and previous.get("modified") == stat.st_mtime
                 and previous.get("extractorVersion") == self.SEARCH_EXTRACTOR_VERSION
-                and previous.get("status") != "failed"
+                and previous.get("status") != "pending"
+                and (previous.get("status") != "failed" or not retry_failed)
             )
             if fresh:
                 text = previous.get("text", "")
@@ -496,19 +575,9 @@ class PdfLibrary:
                 document_indexed_at = previous.get("indexedAt", "") if previous else ""
                 extractor_version = previous.get("extractorVersion", 0) if previous else 0
                 remaining += 1
-            documents.append({
-                "path": rel,
-                "name": path.name,
-                "title": self._display_title(path.name),
-                "folder": self._folder_for_rel(rel),
-                "size": stat.st_size,
-                "modified": stat.st_mtime,
-                "extractorVersion": extractor_version,
-                "text": text,
-                "status": status,
-                "error": error,
-                "indexedAt": document_indexed_at,
-            })
+            documents.append(self._search_index_document(
+                path, stat, text, status, error, document_indexed_at, extractor_version,
+            ))
             if progress_callback:
                 progress_callback({
                     "current": index,
@@ -537,6 +606,22 @@ class PdfLibrary:
             "withText": with_text,
             "failed": failed,
             "path": str(self.search_index_path),
+        }
+
+    def _search_index_document(self, path, stat, text, status, error, indexed_at, extractor_version):
+        rel = self._rel(path)
+        return {
+            "path": rel,
+            "name": path.name,
+            "title": self._display_title(path.name),
+            "folder": self._folder_for_rel(rel),
+            "size": stat.st_size,
+            "modified": stat.st_mtime,
+            "extractorVersion": extractor_version,
+            "text": text,
+            "status": status,
+            "error": error,
+            "indexedAt": indexed_at,
         }
 
     def search_index_status(self):
@@ -784,6 +869,10 @@ class PdfLibrary:
         return {"name": name, "url": url}
 
     def _remember_thumbnail(self, pdf_path, thumbnail):
+        with self._thumbnail_lock:
+            self._remember_thumbnail_unlocked(pdf_path, thumbnail)
+
+    def _remember_thumbnail_unlocked(self, pdf_path, thumbnail):
         try:
             stat = pdf_path.stat()
         except OSError:
@@ -1159,6 +1248,7 @@ class PdfLibrary:
         state = self._load_state()
         if self._remove_state_path(state, source_rel):
             self._save_state(state)
+        self._relocate_search_document(source_rel)
         return source_rel, destination
 
     def _move_state_path(self, state, source_rel, destination_rel):
@@ -1456,6 +1546,10 @@ class PdfLibrary:
         return f"{prefix}{text[start:end]}{suffix}"
 
     def _thumbnail_for(self, pdf_path, force_generate=False):
+        with self._thumbnail_lock:
+            return self._thumbnail_for_unlocked(pdf_path, force_generate)
+
+    def _thumbnail_for_unlocked(self, pdf_path, force_generate):
         pdf_name = pdf_path.name
         stem = pdf_name[:-4] if pdf_name.lower().endswith(".pdf") else pdf_path.stem
         candidates = [self.data_root / f"{stem}-thumbnail.webp"]

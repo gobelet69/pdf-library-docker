@@ -1590,11 +1590,13 @@ async function rebuildSearchIndex() {
   render();
   try {
     let result = null;
+    let retryFailed = true;
     do {
       result = await api("/api/search/rebuild", {
         method: "POST",
-        body: JSON.stringify({ limit: 3 }),
+        body: JSON.stringify({ limit: 3, retryFailed }),
       });
+      retryFailed = false;
       const done = result.indexed - result.remaining;
       state.searchIndexProgress = `${done}/${result.indexed}`;
       state.searchIndexPercent = indexProgressPercent(result);

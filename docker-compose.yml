@@ -4,12 +4,14 @@ services:
     build:
       context: .
     ports:
-      - "8765:8765"
+      - "${PDF_LIBRARY_BIND:-127.0.0.1}:8765:8765"
     environment:
       PDF_LIBRARY_BOOTSTRAP: "${PDF_LIBRARY_BOOTSTRAP:-1}"
       PDF_LIBRARY_REBUILD_INDEX: "${PDF_LIBRARY_REBUILD_INDEX:-1}"
       PDF_LIBRARY_HOST: "0.0.0.0"
       PDF_LIBRARY_PORT: "8765"
     volumes:
-      - ./library:/app/library
+      - type: bind
+        source: ${PDF_LIBRARY_DIR:-./library}
+        target: /app/library
     restart: unless-stopped
