@@ -15,13 +15,22 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from pdf_library import LibraryError, PdfLibrary
+from plugin_registry import PluginConfigError
+from plugin_store import PluginStore
 
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT = APP_DIR.parent
 LIBRARY = PdfLibrary(ROOT)
+PLUGINS = PluginStore(LIBRARY.data_root)
 DEFAULT_INCLUDE_THUMBNAILS = True
 AUTH_CREDENTIALS = None
+
+
+class PluginRequestError(ValueError):
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
 
 
 def load_auth_credentials():
@@ -129,6 +138,11 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/search/status":
                 with LIBRARY._search_index_lock:
                     self._json(LIBRARY.search_index_status(), send_body=send_body)
+            elif parsed.path == "/api/plugins":
+                try:
+                    self._json({"plugins": PLUGINS.public_snapshot()}, send_body=send_body, no_store=True)
+                except Exception:
+                    self._json({"error": "Plugins indisponibles"}, status=503, send_body=send_body, no_store=True)
             elif parsed.path == "/api/open":
                 self._open_file(parsed.query)
             elif parsed.path.startswith("/pdf/"):
@@ -155,6 +169,9 @@ class Handler(BaseHTTPRequestHandler):
         if self._require_auth() or self._reject_cross_origin():
             return
         parsed = urlparse(self.path)
+        if parsed.path == "/api/plugins/discord":
+            self._post_discord_plugin()
+            return
         try:
             if parsed.path == "/api/import":
                 self._json({"imported": self._import_payload()}, status=201)
@@ -224,6 +241,45 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "Invalid JSON"}, status=400)
         except Exception as exc:
             self._json(self._unexpected_error_payload(exc), status=500)
+
+    def _post_discord_plugin(self):
+        if self.headers.get("Sec-Fetch-Site", "").casefold() == "cross-site":
+            self._json({"error": "Acces refuse"}, status=403, no_store=True)
+            return
+        try:
+            payload = self._plugin_json_payload()
+            self._json(PLUGINS.update_discord(payload), no_store=True)
+        except PluginRequestError as exc:
+            self._json({"error": str(exc)}, status=exc.status, no_store=True)
+        except PluginConfigError as exc:
+            message = "Jeton Discord requis" if str(exc) == "A Discord token is required" else "Configuration du plugin invalide"
+            self._json({"error": message}, status=400, no_store=True)
+        except Exception:
+            self._json({"error": "Plugins indisponibles"}, status=503, no_store=True)
+
+    def _plugin_json_payload(self):
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().casefold()
+        if content_type != "application/json":
+            raise PluginRequestError(415, "JSON requis")
+        raw_length = self.headers.get("Content-Length", "")
+        try:
+            length = int(raw_length)
+        except ValueError as exc:
+            raise PluginRequestError(400, "Taille de requete invalide") from exc
+        if length < 0:
+            raise PluginRequestError(400, "Taille de requete invalide")
+        if length > 16 * 1024:
+            raise PluginRequestError(413, "Requete trop volumineuse")
+        raw = self.rfile.read(length)
+        if len(raw) != length:
+            raise PluginRequestError(400, "Requete incomplete")
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise PluginRequestError(400, "JSON invalide") from exc
+        if not isinstance(payload, dict):
+            raise PluginRequestError(400, "Objet JSON requis")
+        return payload
 
     def log_message(self, fmt, *args):
         sys.stdout.write("%s - %s\n" % (self.log_date_time_string(), fmt % args))
@@ -352,12 +408,14 @@ class Handler(BaseHTTPRequestHandler):
             files.append((filename, part.get_payload(decode=True) or b""))
         return files
 
-    def _json(self, data, status=200, send_body=True):
+    def _json(self, data, status=200, send_body=True, no_store=False):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         try:
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            if no_store:
+                self.send_header("Cache-Control", "no-store")
             self.end_headers()
             if send_body:
                 self.wfile.write(body)

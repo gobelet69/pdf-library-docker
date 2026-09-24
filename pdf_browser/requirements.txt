@@ -1,0 +1,8 @@
+# Website archival backend uses the Python standard library.
+# Browser capture and PDF rendering use the existing Node Playwright dependency:
+#   npm install
+#   npx playwright install chromium
+#
+# Optional Wayback support:
+#   pipx install wayback-machine-downloader
+discord.py>=2.4,<3

@@ -1,15 +1,29 @@
 services:
   pdf-library:
-    image: gobelet/pdf-library:latest
+    image: gobelet/pdf-library:${PDF_LIBRARY_VERSION:-latest}
     build:
       context: .
     ports:
-      - "${PDF_LIBRARY_BIND:-127.0.0.1}:8765:8765"
+      - "${PDF_LIBRARY_BIND:-127.0.0.1}:${PDF_LIBRARY_HTTP_PORT:-8765}:8765"
     environment:
       PDF_LIBRARY_BOOTSTRAP: "${PDF_LIBRARY_BOOTSTRAP:-1}"
       PDF_LIBRARY_REBUILD_INDEX: "${PDF_LIBRARY_REBUILD_INDEX:-1}"
       PDF_LIBRARY_HOST: "0.0.0.0"
       PDF_LIBRARY_PORT: "8765"
+    volumes:
+      - type: bind
+        source: ${PDF_LIBRARY_DIR:-./library}
+        target: /app/library
+    restart: unless-stopped
+
+  pdf-library-plugins:
+    image: gobelet/pdf-library-plugins:${PDF_LIBRARY_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.plugins
+    init: true
+    security_opt:
+      - seccomp:./seccomp_profile.json
     volumes:
       - type: bind
         source: ${PDF_LIBRARY_DIR:-./library}

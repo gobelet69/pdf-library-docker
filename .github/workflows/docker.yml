@@ -1,4 +1,4 @@
-name: Verify and publish Docker image
+name: Verify and publish Docker images
 
 on:
   push:
@@ -14,23 +14,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Build image
-        run: docker build -t pdf-library-smoke .
-      - name: Smoke test with a host PDF directory
+      - name: Build both images
+        run: docker compose build
+      - name: Smoke test web, disabled plugin, and URL conversion
         run: |
           mkdir -p "${RUNNER_TEMP}/pdf-library/sorted_pdfs/_Unsorted"
-          docker run -d --name pdf-library-smoke -p 127.0.0.1:18765:8765 \
-            -v "${RUNNER_TEMP}/pdf-library:/app/library" pdf-library-smoke
-          trap 'docker rm -f pdf-library-smoke' EXIT
+          export PDF_LIBRARY_DIR="${RUNNER_TEMP}/pdf-library"
+          trap 'docker compose down' EXIT
+          docker compose up -d --no-build
           for attempt in $(seq 1 30); do
-            status=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18765/api/library || true)
+            status=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/api/library || true)
             if [ "$status" = 401 ]; then break; fi
             sleep 1
           done
           test "$status" = 401
-          password=$(docker exec pdf-library-smoke cat /app/library/app_state/pdf_browser/admin_password)
-          curl --fail --silent --show-error -u "admin:${password}" \
-            http://127.0.0.1:18765/api/library > /dev/null
+          password=$(docker compose exec -T pdf-library cat /app/library/app_state/pdf_browser/admin_password)
+          response=$(curl --fail --silent --show-error -u "admin:${password}" http://127.0.0.1:8765/api/plugins)
+          PLUGINS_JSON="$response" python3 -c 'import json,os; p=json.loads(os.environ["PLUGINS_JSON"])["plugins"][0]; assert p["id"] == "discord" and not p["enabled"] and not p["tokenPresent"]'
+          printf '<!doctype html><html><body><h1>PDF smoke test</h1></body></html>' > "${PDF_LIBRARY_DIR}/smoke.html"
+          docker compose exec -d pdf-library-plugins python3 -m http.server 18767 --bind 127.0.0.1 --directory /app/library
+          sleep 1
+          docker compose exec -T -u node -e PDF_RENDERER_TEST_ALLOW_LOOPBACK=1 pdf-library-plugins node pdf_browser/url_to_pdf.js http://127.0.0.1:18767/smoke.html /tmp/smoke.pdf
+          pdf_bytes=$(docker compose exec -T pdf-library-plugins wc -c /tmp/smoke.pdf | awk '{print $1}')
+          test "$pdf_bytes" -gt 500
 
   publish:
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
@@ -45,12 +51,22 @@ jobs:
         with:
           username: gobelet
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Build and publish
+      - name: Build and publish versioned web
         uses: docker/build-push-action@v7
         with:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: |
-            gobelet/pdf-library:latest
-            gobelet/pdf-library:${{ github.sha }}
+          tags: gobelet/pdf-library:${{ github.sha }}
+      - name: Build and publish versioned plugins
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.plugins
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: gobelet/pdf-library-plugins:${{ github.sha }}
+      - name: Promote verified image pair to latest
+        run: |
+          docker buildx imagetools create -t gobelet/pdf-library:latest gobelet/pdf-library:${{ github.sha }}
+          docker buildx imagetools create -t gobelet/pdf-library-plugins:latest gobelet/pdf-library-plugins:${{ github.sha }}

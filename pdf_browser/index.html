@@ -21,6 +21,7 @@
       <button class="folder urgent" id="quickTriageBtn" type="button">Classer <span id="quickTriageCount">0</span></button>
       <button class="folder urgent" id="quickRenameBtn" type="button">Renommer <span id="quickRenameCount">0</span></button>
       <button class="folder urgent" id="cleanupBtn" type="button">À nettoyer <span id="cleanupCount">0</span></button>
+      <button class="folder sidebar-options" id="optionsBtn" type="button">Options</button>
       <div class="tree" id="folderTree"></div>
     </aside>
 
@@ -61,6 +62,43 @@
           <button id="rebuildSearchBtn" title="Indexer le contenu des PDFs">Indexer</button>
         </div>
       </header>
+
+      <section class="plugins-view" id="pluginsPanel" hidden>
+        <p class="plugin-error" id="discordError" role="alert" hidden></p>
+        <div class="plugins-list" id="pluginsList"></div>
+        <section class="plugin-detail" id="discordPlugin" hidden>
+          <div class="plugin-detail-head">
+            <div>
+              <h3>Discord</h3>
+              <p>Importe les PDF et les liens des messages.</p>
+            </div>
+            <span class="plugin-state" id="discordState"></span>
+          </div>
+          <p class="plugin-status-message" id="discordMessage" role="status"></p>
+          <label class="plugin-switch">
+            <input id="discordEnable" type="checkbox">
+            <span>Activer le bot</span>
+          </label>
+          <div class="plugin-fields">
+            <div class="plugin-field">
+              <label for="discordToken">Jeton Discord</label>
+              <input id="discordToken" type="password" autocomplete="new-password" spellcheck="false">
+              <span class="plugin-field-status" id="discordTokenStatus"></span>
+              <div class="plugin-actions">
+                <button id="discordTokenSave" type="button" class="primary">Enregistrer</button>
+                <button id="discordTokenClear" type="button">Effacer</button>
+              </div>
+            </div>
+            <div class="plugin-field">
+              <label for="discordScanLimit">Messages anciens à parcourir</label>
+              <input id="discordScanLimit" type="number" min="0" max="1000" step="1" value="100">
+              <div class="plugin-actions">
+                <button id="discordLimitSave" type="button">Enregistrer</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </section>
 
       <section class="triage" id="triagePanel" hidden>
         <div>

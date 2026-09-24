@@ -77,6 +77,10 @@ const state = {
   thumbnailObserver: null,
   dailyFive: null,
   dailyFiveHistory: readJsonStorage(DAILY_FIVE_HISTORY_KEY, {}),
+  plugins: null,
+  pluginError: "",
+  pluginSaving: false,
+  pluginTimer: null,
 };
 
 const el = {
@@ -89,6 +93,21 @@ const el = {
   quickRenameCount: document.querySelector("#quickRenameCount"),
   cleanupBtn: document.querySelector("#cleanupBtn"),
   cleanupCount: document.querySelector("#cleanupCount"),
+  optionsBtn: document.querySelector("#optionsBtn"),
+  pluginsPanel: document.querySelector("#pluginsPanel"),
+  pluginsList: document.querySelector("#pluginsList"),
+  discordPlugin: document.querySelector("#discordPlugin"),
+  discordState: document.querySelector("#discordState"),
+  discordMessage: document.querySelector("#discordMessage"),
+  discordEnable: document.querySelector("#discordEnable"),
+  discordToken: document.querySelector("#discordToken"),
+  discordTokenStatus: document.querySelector("#discordTokenStatus"),
+  discordTokenSave: document.querySelector("#discordTokenSave"),
+  discordTokenClear: document.querySelector("#discordTokenClear"),
+  discordScanLimit: document.querySelector("#discordScanLimit"),
+  discordLimitSave: document.querySelector("#discordLimitSave"),
+  discordError: document.querySelector("#discordError"),
+  toolbarTools: document.querySelector(".toolbar .tools"),
   graphBtn: document.querySelector("#graphBtn"),
   graphCount: document.querySelector("#graphCount"),
   folderTree: document.querySelector("#folderTree"),
@@ -367,6 +386,11 @@ function errorDisplayMessage(error) {
 
 function render() {
   const { library } = state;
+  document.body.classList.toggle("options-mode", state.mode === "options");
+  if (state.mode !== "options" && state.pluginTimer !== null) {
+    clearInterval(state.pluginTimer);
+    state.pluginTimer = null;
+  }
   el.rootLabel.textContent = library.root;
   el.allCount.textContent = library.counts.pdfs;
   el.unsortedCount.textContent = library.counts.unsorted;
@@ -378,6 +402,8 @@ function render() {
   el.quickRenameBtn.classList.toggle("active", state.mode === "rename");
   el.cleanupBtn.classList.toggle("active", state.mode === "cleanup");
   el.graphBtn.classList.toggle("active", state.mode === "graph");
+  el.optionsBtn.classList.toggle("active", state.mode === "options");
+  el.toolbarTools.hidden = state.mode === "options";
   el.urlImportBtn.disabled = state.importingUrl;
   el.urlImportBtn.textContent = state.importingUrl ? "Import..." : "URL PDF";
   el.urlImportEyebrow.textContent = "Importer un PDF";
@@ -405,6 +431,77 @@ function render() {
   renderCleanup();
   renderContentSearch();
   renderGraph();
+  renderPlugins();
+}
+
+function renderPlugins() {
+  el.pluginsPanel.hidden = state.mode !== "options";
+  if (state.mode !== "options") return;
+  el.viewTitle.textContent = "Options";
+  el.viewMeta.textContent = "Plugins";
+  const plugins = state.plugins || [];
+  el.pluginsList.innerHTML = plugins.map((plugin) => `
+    <div class="plugin-list-item">
+      <span>${escapeHtml(plugin.name)}</span>
+      <small>${plugin.enabled ? "Actif" : "Inactif"}</small>
+    </div>
+  `).join("");
+  const discord = plugins.find((plugin) => plugin.id === "discord");
+  el.discordPlugin.hidden = !discord;
+  el.discordError.hidden = !state.pluginError;
+  el.discordError.textContent = state.pluginError;
+  if (!discord) return;
+  el.discordState.dataset.state = discord.state;
+  el.discordState.textContent = discord.state === "running" ? "Connecté" : discord.enabled ? "Activé" : "Désactivé";
+  el.discordMessage.textContent = discord.message || "";
+  if (!state.pluginSaving) el.discordEnable.checked = Boolean(discord.enabled);
+  el.discordEnable.disabled = state.pluginSaving || !discord.tokenPresent;
+  el.discordTokenStatus.textContent = discord.tokenPresent ? "Jeton enregistré" : "Aucun jeton enregistré";
+  el.discordTokenSave.disabled = state.pluginSaving || !el.discordToken.value.trim();
+  el.discordTokenClear.disabled = state.pluginSaving || !discord.tokenPresent;
+  el.discordLimitSave.disabled = state.pluginSaving;
+  if (document.activeElement !== el.discordScanLimit && !state.pluginSaving) {
+    el.discordScanLimit.value = String(discord.startupScanLimit);
+  }
+}
+
+async function loadPlugins() {
+  try {
+    const response = await api("/api/plugins");
+    state.plugins = response.plugins;
+  } catch (error) {
+    state.pluginError = errorDisplayMessage(error);
+  }
+  renderPlugins();
+}
+
+async function saveDiscordPlugin(patch) {
+  if (state.pluginSaving) return;
+  state.pluginSaving = true;
+  state.pluginError = "";
+  renderPlugins();
+  try {
+    const updated = await api("/api/plugins/discord", { method: "POST", body: JSON.stringify(patch) });
+    state.plugins = (state.plugins || []).map((plugin) => plugin.id === "discord" ? updated : plugin);
+    el.discordToken.value = "";
+    await loadPlugins();
+  } catch (error) {
+    state.pluginError = errorDisplayMessage(error);
+  } finally {
+    state.pluginSaving = false;
+    renderPlugins();
+  }
+}
+
+function openOptions() {
+  setMode("options");
+  state.pluginError = "";
+  loadPlugins();
+  if (state.pluginTimer === null) {
+    state.pluginTimer = setInterval(() => {
+      if (state.mode === "options" && !state.pluginSaving) loadPlugins();
+    }, 5000);
+  }
 }
 
 function renderDailyFive() {
@@ -651,7 +748,7 @@ function renderGrid() {
   disconnectGridObserver();
   disconnectThumbnailObserver();
   el.grid.innerHTML = "";
-  if (state.mode === "triage" || state.mode === "rename" || state.mode === "cleanup" || state.mode === "contentSearch" || state.mode === "graph") {
+  if (state.mode === "triage" || state.mode === "rename" || state.mode === "cleanup" || state.mode === "contentSearch" || state.mode === "graph" || state.mode === "options") {
     el.grid.hidden = true;
     el.empty.hidden = true;
     el.triagePanel.hidden = true;
@@ -2841,6 +2938,23 @@ el.quickTriageBtn.addEventListener("click", () => setMode("triage"));
 el.quickRenameBtn.addEventListener("click", () => setMode("rename"));
 el.cleanupBtn.addEventListener("click", setCleanupMode);
 el.graphBtn.addEventListener("click", setGraphMode);
+el.optionsBtn.addEventListener("click", openOptions);
+el.discordToken.addEventListener("input", renderPlugins);
+el.discordTokenSave.addEventListener("click", () => {
+  const token = el.discordToken.value.trim();
+  if (token) saveDiscordPlugin({ token });
+});
+el.discordTokenClear.addEventListener("click", () => {
+  if (window.confirm("Effacer le jeton Discord et désactiver le bot ?")) {
+    saveDiscordPlugin({ clearToken: true, enabled: false });
+  }
+});
+el.discordEnable.addEventListener("change", () => {
+  saveDiscordPlugin({ enabled: el.discordEnable.checked });
+});
+el.discordLimitSave.addEventListener("click", () => {
+  saveDiscordPlugin({ startupScanLimit: Number(el.discordScanLimit.value) });
+});
 el.graphReset.addEventListener("click", (event) => {
   event.preventDefault();
   event.stopPropagation();

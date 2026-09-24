@@ -1,52 +1,44 @@
 # PDF Library Docker
 
-Minimal Docker package for the PDF Library web app.
+Portable PDF library with an optional, disabled-by-default Discord plugin. Web Archive and the macOS menu bar are not included.
 
-## Run With Docker Hub
-
-```bash
-mkdir -p library/sorted_pdfs/_Unsorted
-docker run -d --name pdf-library -p 127.0.0.1:8765:8765 -v "$PWD/library:/app/library" gobelet/pdf-library:latest
-```
-
-Use any absolute host directory in place of `$PWD/library`. Put existing PDFs in its `sorted_pdfs/_Unsorted` subdirectory, or organize them in subfolders under `sorted_pdfs`.
-
-The first launch creates the admin password in the mounted directory. Read it with:
-
-```bash
-docker exec pdf-library cat /app/library/app_state/pdf_browser/admin_password
-```
-
-The username is `admin`. Then open:
-
-```text
-http://localhost:8765
-```
-
-## Run With Compose
+## Start
 
 ```bash
 mkdir -p library/sorted_pdfs/_Unsorted
-docker compose up -d --build
+docker compose up -d
 ```
 
-To use a host directory elsewhere, set `PDF_LIBRARY_DIR` to its absolute path, either in a local `.env` file or on the command line:
+Open `http://localhost:8765`. The username is `admin`; Docker writes the initial password to `library/app_state/pdf_browser/admin_password`. To read it without printing it here:
 
 ```bash
-PDF_LIBRARY_DIR=/absolute/path/to/pdf-bank docker compose up -d --build
+docker compose exec pdf-library cat /app/library/app_state/pdf_browser/admin_password
 ```
 
-Read the password with `docker compose exec pdf-library cat /app/library/app_state/pdf_browser/admin_password`. The mounted directory stores PDFs and app state outside the image:
+The `library` directory is a bind mount, not part of either image. PDFs go in `library/sorted_pdfs` and can be organized in subfolders. The search index, thumbnails, plugin configuration, and bot import history remain in `library/app_state` across container upgrades.
 
-- `sorted_pdfs` for PDFs
-- `app_state/pdf_browser/search_index.json` for the search index
-- `app_state/pdf_browser/generated_thumbnails` for generated thumbnails
-- `pdf_trash` and `paperless_archive_pdfs` for removed or archived PDFs
+To use a PDF bank elsewhere on the host, set an absolute `PDF_LIBRARY_DIR` in a local `.env` file or run:
 
-Compose listens on `127.0.0.1:8765` by default. Use an HTTPS reverse proxy on the same host for access over the internet. For direct access on a trusted private network, set `PDF_LIBRARY_BIND=0.0.0.0`; Basic authentication does not encrypt HTTP traffic.
+```bash
+PDF_LIBRARY_DIR=/absolute/path/to/pdf-bank docker compose up -d
+```
 
-On startup, the container scans the mounted library and rebuilds the search index. Set `PDF_LIBRARY_REBUILD_INDEX=0` to skip startup indexing, or `PDF_LIBRARY_BOOTSTRAP=0` to skip both scan and indexing.
+Put PDFs in `/absolute/path/to/pdf-bank/sorted_pdfs/_Unsorted` or another folder under `sorted_pdfs`. The app scans and indexes them on startup; the first launch may take time. Set `PDF_LIBRARY_REBUILD_INDEX=0` to skip startup indexing, or `PDF_LIBRARY_BOOTSTRAP=0` to skip both scan and indexing.
 
-The release workflow builds `linux/amd64` and `linux/arm64` images. To publish to Docker Hub, configure the GitHub Actions secret `DOCKERHUB_TOKEN` for the `gobelet` account and run the workflow manually or push a version tag.
+## Discord plugin
 
-Direct PDF URL imports are supported. Browser-based website-to-PDF capture is intentionally excluded from this minimal Docker image.
+Both services start with the same `docker compose up -d`, but the bot remains disabled until configured. Enable the Message Content intent for your bot in the Discord developer portal and give it access to the channels it should read. In **Options > Plugins**, save the Discord bot token, then enable the bot. It imports PDF attachments and URL-to-PDF captures into `_Unsorted`. Its processed-message record prevents reimporting old messages after restart.
+
+URL captures accept public HTTP(S) sites only; private network addresses and local files are blocked. The plugin service runs the browser as an unprivileged user with Chromium sandboxing. Its Compose security profile is based on the [Playwright Docker seccomp example](https://github.com/microsoft/playwright/blob/main/utils/docker/seccomp_profile.json) (Playwright is licensed under Apache-2.0). Keep `seccomp_profile.json` alongside the Compose file.
+
+The token is stored separately in `library/app_state/plugins/discord.token` with owner-only permissions, never in `.env` or the image. The browser sees only whether one is saved. Use Options to disable the bot, replace the token, or clear it. Plugin errors do not stop the web app. Third-party plugin installation is not available yet.
+
+The web image alone can be run with `docker run`, but plugins require the second Compose service. To pin a compatible pair of prebuilt images, set `PDF_LIBRARY_VERSION` in `.env`; the same tag is applied to both images. Use `docker compose up -d --build` to build from this repository instead of pulling published images.
+
+## Network and updates
+
+Compose binds `127.0.0.1:8765` by default. Put an HTTPS reverse proxy in front of it for internet access; Basic authentication does not encrypt HTTP. Set `PDF_LIBRARY_BIND=0.0.0.0` only on a trusted private network.
+
+For updates, pull both images with `docker compose pull` and restart with `docker compose up -d`. The host PDF directory stays untouched. The images are built for `linux/amd64` and `linux/arm64` by the release workflow when published.
+
+For repeatable deployments, set `PDF_LIBRARY_VERSION` to a published commit SHA. The workflow publishes both images under that SHA before updating `latest`.
